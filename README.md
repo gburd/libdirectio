@@ -1,7 +1,7 @@
 libdirectio
 ===========
 
-Disable the filesystem buffer cache by preloading this library
+Disable the filesystem buffer cache by preloading this library.[1]
 
 To compile the library simply run `make`. You can pre-load it using the `LD_PRELOAD` environment variable in this way:
 
@@ -15,3 +15,5 @@ To unload the library and restore the standard access simply run:
 ```bash
 # unload LD_PRELOAD
 ```
+
+ [1](http://arighi.blogspot.co.uk/2007/04/how-to-bypass-buffer-cache-in-linux.html)
