@@ -20,3 +20,5 @@ You can also use it only for one single command:
 ```bash
 # LD_PRELOAD=/path_to/libdirectio.so.0.1 dd if=/dev/zero of=test bs=512 count=1000
 ```
+
+See also: https://code.google.com/p/pagecache-mangagement/
