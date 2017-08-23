@@ -29,13 +29,16 @@ static int (*orig_open64)(const char *, int, ...) = NULL;
 static int __do_wrap_open(const char *name, int flags, mode_t mode,
 int (*func_open)(const char *, int, ...))
 {
+    if (!strncmp("/dev/", name, sizeof("/dev/") - 1) || !strncmp("/proc/", name, sizeof("/proc/") - 1)) {
+        //return fd;
+        DPRINTF("skipping flag O_DIRECT on %s\n", name);
+        return func_open(name, flags, mode);
+    }
     if (strncmp("/dev/null", name, sizeof("/dev/null"))) {
         DPRINTF("setting flags O_DIRECT on %s\n", name);
         flags |= O_DIRECT;
     }
-    if (!strncmp("/dev/", name, sizeof("/dev/") - 1) ||
-            !strncmp("/proc/", name, sizeof("/proc/") - 1))
-        return fd;
+    DPRINTF(" not setting flags O_DIRECT on %s\n", name);
     return func_open(name, flags, mode);
 }
 
@@ -69,6 +72,7 @@ int wrap_open64(const char *name, int flags, ...)
 
 void _init(void)
 {
+    fprintf(stderr, "info: Replacing open(2)!\n");
     orig_open = dlsym(RTLD_NEXT, "open");
     if (!orig_open) {
         fprintf(stderr, "error: missing symbol open!\n");

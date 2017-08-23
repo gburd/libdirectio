@@ -13,5 +13,12 @@ Then you can run your brand-new direct I/O benchmark (typically `dd`) for block 
 
 To unload the library and restore the standard access simply run:
 ```bash
-# unload LD_PRELOAD
+# unset LD_PRELOAD
 ```
+
+You can also use it only for one single command:
+```bash
+# LD_PRELOAD=/path_to/libdirectio.so.0.1 dd if=/dev/zero of=test bs=512 count=1000
+```
+
+See also: https://code.google.com/p/pagecache-mangagement/
