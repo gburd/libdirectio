@@ -1,18 +1,23 @@
-VERSION=0.1
+VERSION = 0.2
+TARGET = libdirectio.so.$(VERSION)
 
-TARGET=libdirectio.so.$(VERSION)
-OBJS=libdirectio.o
-CC=gcc
-CFLAGS= -fPIC -Wall -O2 -g
-SHAREDFLAGS= -nostartfiles -shared -W1,-soname,libdirectio.so.0
+CFLAGS ?= -O2 -g -Wall -Wextra
+LDLIBS = -ldl
 
 all: $(TARGET)
 
-%.o: %.c
-	$(CC) -I. $(CFLAGS) -c $< -o $@
+$(TARGET): libdirectio.c
+	$(CC) $(CFLAGS) -fPIC -shared -Wl,-soname,libdirectio.so.0 $(LDFLAGS) $< -o $@ $(LDLIBS)
 
-$(TARGET): $(OBJS)
-	$(CC) $(SHAREDFLAGS) $(OBJS) -o $(TARGET) -lc -ldl
+test_directio: test_directio.c
+
+check: $(TARGET) test_directio
+	LD_PRELOAD=$(CURDIR)/$(TARGET) ./test_directio
+	LD_PRELOAD=$(CURDIR)/$(TARGET) dd if=/dev/zero of=test_directio.dd bs=4096 count=256 status=none
+	LD_PRELOAD=$(CURDIR)/$(TARGET) dd if=test_directio.dd of=/dev/null bs=4096 status=none
+	rm -f test_directio.dd
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(TARGET) test_directio test_directio.dat test_directio.fifo test_directio.dd
+
+.PHONY: all check clean

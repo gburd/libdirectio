@@ -1,86 +1,145 @@
+/*
+ * libdirectio: LD_PRELOAD shim that sets O_DIRECT on every regular file and
+ * block device a program opens, so its I/O bypasses the page cache.
+ *
+ * Based on Andrea Righi's example:
+ * http://arighi.blogspot.com/2007/04/how-to-bypass-buffer-cache-in-linux.html
+ */
 #define _GNU_SOURCE
-#define __USE_GNU
+#undef _FILE_OFFSET_BITS	/* keep open and open64 distinct symbols */
+#undef _FORTIFY_SOURCE		/* fortify inlines would clash with our definitions */
 
-#include <stdio.h>
-#include <stdarg.h>
-#include <string.h>
-#include <fcntl.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <sys/types.h>
+#include <sys/stat.h>
 
-#define DEBUG
+/* glibc's _FORTIFY_SOURCE entry points; not declared without fortify. */
+int __open_2(const char *, int);
+int __open64_2(const char *, int);
+int __openat_2(int, const char *, int);
+int __openat64_2(int, const char *, int);
 
-#ifdef DEBUG
-#define DPRINTF(format, args...) fprintf(stderr, "debug: " format, ##args)
-#else
-#define DPRINTF(format, args...)
-#endif
+#define NEEDS_MODE(f)	(((f) & O_CREAT) || ((f) & O_TMPFILE) == O_TMPFILE)
+#define GET_MODE(flags, mode) do { \
+	if (NEEDS_MODE(flags)) { \
+		va_list ap; \
+		va_start(ap, flags); \
+		mode = va_arg(ap, mode_t); \
+		va_end(ap); \
+	} \
+} while (0)
+/* Resolved lazily: other constructors may call open() before ours runs. */
+#define REAL(fn)	static __typeof__(fn) *real; if (!real) real = next(#fn)
 
-int open(const char *, int, ...) __attribute__ ((weak, alias("wrap_open")));
-int __open(const char *, int, ...) __attribute__ ((weak, alias("wrap_open")));
-int open64(const char *, int, ...) __attribute__ ((weak, alias("wrap_open64")));
-int __open64(const char *, int, ...) __attribute__ ((weak, alias("wrap_open64")));
+static int debug;
 
-static int (*orig_open)(const char *, int, ...) = NULL;
-static int (*orig_open64)(const char *, int, ...) = NULL;
-
-static int __do_wrap_open(const char *name, int flags, mode_t mode,
-int (*func_open)(const char *, int, ...))
+__attribute__((constructor)) static void init(void)
 {
-    if (!strncmp("/dev/", name, sizeof("/dev/") - 1) || !strncmp("/proc/", name, sizeof("/proc/") - 1)) {
-        //return fd;
-        DPRINTF("skipping flag O_DIRECT on %s\n", name);
-        return func_open(name, flags, mode);
-    }
-    if (strncmp("/dev/null", name, sizeof("/dev/null"))) {
-        DPRINTF("setting flags O_DIRECT on %s\n", name);
-        flags |= O_DIRECT;
-    }
-    DPRINTF(" not setting flags O_DIRECT on %s\n", name);
-    return func_open(name, flags, mode);
+	debug = getenv("DIRECTIO_DEBUG") != NULL;
 }
 
-int wrap_open(const char *name, int flags, ...)
+static void *next(const char *sym)
 {
-    va_list args;
-    mode_t mode;
+	void *p = dlsym(RTLD_NEXT, sym);
 
-    va_start(args, flags);
-    mode = va_arg(args, mode_t);
-    va_end(args);
-
-    DPRINTF("calling libc open(%s, 0x%x, 0x%x)\n", name, flags, mode);
-
-    return __do_wrap_open(name, flags, mode, orig_open);
+	if (!p) {
+		fprintf(stderr, "libdirectio: missing symbol %s\n", sym);
+		abort();
+	}
+	return p;
 }
 
-int wrap_open64(const char *name, int flags, ...)
+/*
+ * Turn on O_DIRECT after the open succeeds rather than passing it to open():
+ * a filesystem that refuses O_DIRECT then just keeps buffered I/O instead of
+ * failing the open (or, with O_CREAT|O_EXCL, creating the file and failing).
+ * Only regular files and block devices: O_DIRECT on a FIFO means packet mode.
+ */
+static int directio(int fd, const char *path)
 {
-    va_list args;
-    mode_t mode;
+	int saved = errno, fl;
+	struct stat st;
+	const char *what = "skipped";
 
-    va_start(args, flags);
-    mode = va_arg(args, mode_t);
-    va_end(args);
-
-    DPRINTF("calling libc open64(%s, 0x%x, 0x%x)\n", name, flags, mode);
-
-    return __do_wrap_open(name, flags, mode, orig_open64);
+	if (fd < 0)
+		return fd;
+	if (fstat(fd, &st) == 0 && (S_ISREG(st.st_mode) || S_ISBLK(st.st_mode)) &&
+	    (fl = fcntl(fd, F_GETFL)) != -1)
+		what = fcntl(fd, F_SETFL, fl | O_DIRECT) == 0 ? "O_DIRECT" : "unsupported";
+	if (debug)
+		fprintf(stderr, "libdirectio: %s: %s\n", path, what);
+	errno = saved;
+	return fd;
 }
 
-void _init(void)
+int open(const char *path, int flags, ...)
 {
-    fprintf(stderr, "info: Replacing open(2)!\n");
-    orig_open = dlsym(RTLD_NEXT, "open");
-    if (!orig_open) {
-        fprintf(stderr, "error: missing symbol open!\n");
-        exit(1);
-    }
-    orig_open64 = dlsym(RTLD_NEXT, "open64");
-    if (!orig_open64) {
-        fprintf(stderr, "error: missing symbol open64!\n");
-        exit(1);
-    }
+	mode_t mode = 0;
+	REAL(open);
+	GET_MODE(flags, mode);
+	return directio(real(path, flags, mode), path);
+}
+
+int open64(const char *path, int flags, ...)
+{
+	mode_t mode = 0;
+	REAL(open64);
+	GET_MODE(flags, mode);
+	return directio(real(path, flags, mode), path);
+}
+
+int openat(int dirfd, const char *path, int flags, ...)
+{
+	mode_t mode = 0;
+	REAL(openat);
+	GET_MODE(flags, mode);
+	return directio(real(dirfd, path, flags, mode), path);
+}
+
+int openat64(int dirfd, const char *path, int flags, ...)
+{
+	mode_t mode = 0;
+	REAL(openat64);
+	GET_MODE(flags, mode);
+	return directio(real(dirfd, path, flags, mode), path);
+}
+
+int creat(const char *path, mode_t mode)
+{
+	REAL(creat);
+	return directio(real(path, mode), path);
+}
+
+int creat64(const char *path, mode_t mode)
+{
+	REAL(creat64);
+	return directio(real(path, mode), path);
+}
+
+int __open_2(const char *path, int flags)
+{
+	REAL(__open_2);
+	return directio(real(path, flags), path);
+}
+
+int __open64_2(const char *path, int flags)
+{
+	REAL(__open64_2);
+	return directio(real(path, flags), path);
+}
+
+int __openat_2(int dirfd, const char *path, int flags)
+{
+	REAL(__openat_2);
+	return directio(real(dirfd, path, flags), path);
+}
+
+int __openat64_2(int dirfd, const char *path, int flags)
+{
+	REAL(__openat64_2);
+	return directio(real(dirfd, path, flags), path);
 }

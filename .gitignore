@@ -10,3 +10,10 @@
 *.lai
 *.la
 *.a
+
+# Build and test outputs
+libdirectio.so.*
+test_directio
+test_directio.dat
+test_directio.fifo
+test_directio.dd
